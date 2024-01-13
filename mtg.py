@@ -313,25 +313,28 @@ cards.sort(key=cmp_to_key(cmp))
 # print cards
 if cards:
     # print prices differently
-    styled = [
-        {
-            **c,
-            "price": "-" if "price" not in c or c["price"] == 0 else f"€{c['price']}",
-            "tcg_price": "-"
-            if "tcg_price" not in c or c["tcg_price"] == 0
-            else f"${c['tcg_price']}",
-        }
-        for c in cards
-    ]
-    # get least width that will fit all elements in column
-    widths = [max(map(lambda c: len(str(c[e])), styled)) for e in elements]
-    # create the template to format cards
-    template = (" " * 4).join(f"{{{e}:<{w}}}" for e, w in zip(elements, widths))
-    # print all cards
-    for c in styled:
-        print(template.format(**{k: str(v) for k, v in c.items()}))
-    # follow by newline
-    print()
+    if elements:
+        styled = [
+            {
+                **c,
+                "price": "-"
+                if "price" not in c or c["price"] == 0
+                else f"€{c['price']}",
+                "tcg_price": "-"
+                if "tcg_price" not in c or c["tcg_price"] == 0
+                else f"${c['tcg_price']}",
+            }
+            for c in cards
+        ]
+        # get least width that will fit all elements in column
+        widths = [max(map(lambda c: len(str(c[e])), styled)) for e in elements]
+        # create the template to format cards
+        template = (" " * 4).join(f"{{{e}:<{w}}}" for e, w in zip(elements, widths))
+        # print all cards
+        for c in styled:
+            print(template.format(**{k: str(v) for k, v in c.items()}))
+        # follow by newline
+        print()
 
     def data(e):
         # remove the amount statistic to more easily apply the function
