@@ -80,7 +80,7 @@ for arg in argv[1:]:
     # 1: everything before next '?' or filter operator
     # 2: optional '?' character
     # 3: filter operator and filter value repeated any number of times if separated by '/'
-    a = re.match("^(.*-)?([^?=!:<>]+)?(\?)?((?:[=!:<>]+[^=!:<>/]+/?)+)?(?<!/)$", arg)
+    a = re.match("^(.*-)?([^?=!:<>]+)?(\\?)?((?:[=!:<>]+[^=!:<>/]+/?)+)?(?<!/)$", arg)
 
     if a is not None:
         m, e, q, f = a.groups()
