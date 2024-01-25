@@ -73,6 +73,7 @@ modified = []  # all global stats to print
 filters = []  # all filters applied to cards
 list_decks = False  # wether to list available decks
 unique = False  # wether to print number of unique matches
+english = False  # wether to get all cards in english
 
 # parse arguments
 for arg in argv[1:]:
@@ -124,6 +125,9 @@ for arg in argv[1:]:
         # unique modifier flag
         case ("-", "unique", None, None):
             unique = True
+        # english override flag
+        case ("-", "en", None, None):
+            english = True
         # asterisk for all cards
         case (None, "*", None, None):
             decks.append("collection")
@@ -159,12 +163,14 @@ for d in decks:
                 }
             )
 
-# read cards from web only if necessary
+# read cards from web only if necessary 1022
 if any(e not in RAW_ELEMENTS for e in elements + [e for e, _ in modified + filters]):
     session = FuturesSession()
-    links = [  # grab information from scryfall.com
-        "https://scryfall.com/card/{set}/{number}/{language}".format(**c) for c in cards
-    ]
+    link_template = "https://scryfall.com/card/{set}/{number}"
+    if not english:
+        link_template += "/{language}"
+    # grab information from scryfall.com
+    links = [link_template.format(**c) for c in cards]
     # load all links at once
     futures = [session.get(link) for link in links]
     responses = [future.result() for future in futures]
