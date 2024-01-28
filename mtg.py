@@ -1,15 +1,16 @@
 import os
 import re
 import json
-import requests
+import asyncio
+import aiohttp
 from sys import argv
 from statistics import mean, median
 from functools import cmp_to_key
-from ratelimit import limits, sleep_and_retry
 
 DECK_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "decks")
 RAW_COLUMNS = ("amount", "set", "number", "lang", "foil")
 API_LINK = "https://api.scryfall.com/cards/{set}/{number}/{lang}"
+RATE_LIMIT = 0.1
 
 decks = set()  # all decks to search
 elements = []  # all elements to print
@@ -107,17 +108,6 @@ for arg in argv[1:]:
             print(f"ERROR: '{arg}' is not a recognized command")
             exit(1)
 
-
-# max 10 api calls every second
-@sleep_and_retry
-@limits(calls=10, period=1)
-def get_card(card):
-    uri = API_LINK.format(**card)
-    response = requests.get(uri)
-    response.raise_for_status()
-    return response.json()
-
-
 for deck in decks:
     raw_path = os.path.join(DECK_DIR, deck, "raw.txt")
     data_path = os.path.join(DECK_DIR, deck, "data.json")
@@ -133,7 +123,22 @@ for deck in decks:
                 dict(zip(RAW_COLUMNS, line.rstrip("\n").split("\t")))
                 for line in raw_file
             ]
-            scry = [get_card(card) for card in raw]
+
+            async def get_card(card, session):
+                url = API_LINK.format(**card)
+                async with session.get(url=url) as response:
+                    return json.loads(await response.read())
+
+            async def get_cards(cards):
+                async with aiohttp.ClientSession() as session:
+                    tasks = []
+                    for card in cards:
+                        task = asyncio.create_task(get_card(card, session))
+                        tasks.append(task)
+                        await asyncio.sleep(RATE_LIMIT)
+                    return await asyncio.gather(*tasks)
+
+            scry = asyncio.run(get_cards(raw))
             data = []
 
             for r, s in zip(raw, scry):
