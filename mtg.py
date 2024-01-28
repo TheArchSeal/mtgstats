@@ -196,7 +196,8 @@ def apply_filter(apply_amount):
             cards = [
                 c
                 for c in cards
-                if any(
+                if c[e] is not None
+                and any(
                     func_map[o](float(c[e]) if ELEMENTS[e] else str(c[e]), v)
                     for o, v in f
                 )
