@@ -1,283 +1,198 @@
-import re
 import os
+import re
+import json
+import requests
 from sys import argv
 from statistics import mean, median
 from functools import cmp_to_key
-from requests_futures.sessions import FuturesSession
+from ratelimit import limits, sleep_and_retry
 
-# path to folder containing decks
 DECK_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "decks")
+RAW_COLUMNS = ("amount", "set", "number", "lang", "foil")
+API_LINK = "https://api.scryfall.com/cards/{set}/{number}/{lang}"
 
-# all kinds of elements of a cards
-ELEMENTS = [
-    "amount",
-    "name",
-    "set",
-    "number",
-    "foil",
-    "language",
-    "cost",
-    "cmc",
-    "color",
-    "type",
-    "subtype",
-    "rarity",
-    "price",
-    "tcg_price",
-    "modern",
-    "commander",
-]
-# all kinds of elements stored in file
-RAW_ELEMENTS = [
-    "amount",
-    "set",
-    "number",
-    "foil",
-    "language",
-]
-# all kinds of numeric elements
-COUNTABLE_ELEMENTS = [
-    "amount",
-    "cmc",
-    "price",
-    "tcg_price",
-]
-# global stats applicable to countable elements
-ELEMENT_MODIFIERS = [
+decks = set()  # all decks to search
+elements = []  # all elements to print
+stats = []  # all global stats to print
+filters = set()  # all filters applied to cards
+flags = set()  # all flags set
+cards = []  # all cards found
+
+ELEMENTS = {
+    "amount": True,
+    "foil": False,
+    "name": False,
+    "lang": False,
+    "cost": False,
+    "cmc": True,
+    "type": False,
+    "subtype": False,
+    "color": False,
+    "identity": False,
+    "modern": False,
+    "commander": False,
+    "set": False,
+    "number": False,
+    "rarity": False,
+    "fullart": False,
+    "usd": True,
+    "eur": True,
+}
+
+PREFIXES = {
     "-total-",
     "-max-",
     "-min-",
     "-avg-",
     "-median-",
-]
-# filters applicable to uncountable elements
-ELEMENT_FILTERS = [
-    "=",
-    "!=",
-    ":",
-    "!:",
-]
-# filters applicable to countable elements
-COUNTABLE_FILTERS = [
-    "=",
-    "!=",
-    ">",
-    ">=",
-    "<",
-    "<=",
-]
+}
 
-decks = []  # all decks to search
-elements = []  # all elements to print
-modified = []  # all global stats to print
-filters = []  # all filters applied to cards
-list_decks = False  # wether to list available decks
-unique = False  # wether to print number of unique matches
-english = False  # wether to get all cards in english
+FILTERS = {
+    "=": (True, True),
+    "!=": (True, True),
+    "@": (True, False),
+    "!@": (True, False),
+    "<": (False, True),
+    "<=": (False, True),
+    ">": (False, True),
+    ">=": (False, True),
+}
+
+FLAGS = {
+    "decks",
+    "unique",
+    "get",
+}
 
 # parse arguments
 for arg in argv[1:]:
-    # 0: everything before and including last '-'
-    # 1: everything before next '?' or filter operator
-    # 2: optional '?' character
-    # 3: filter operator and filter value repeated any number of times if separated by '/'
-    a = re.match("^(.*-)?([^?=!:<>]+)?(\\?)?((?:[=!:<>]+[^=!:<>/]+/?)+)?(?<!/)$", arg)
+    prefix, element, show, search = re.match(
+        "(.*-)?([^?=!@<>]+)?(\\?)?(.+)?", arg
+    ).groups()
+    if search is not None:
+        search = [re.match("([=!@<>]+)?(.+)?", x).groups() for x in search.split("/")]
 
-    if a is not None:
-        m, e, q, f = a.groups()
-        # split into tuples of filter operators and filter values
-        f = (
-            None
-            if f is None
-            else [re.match("^([=!:<>]+)([^=!:<>]+)$", x).groups() for x in f.split("/")]
-        )
-        a = m, e, q, f
-
-    match a:
-        # modified element
-        case (m, e, None, None) if m in ELEMENT_MODIFIERS and e in COUNTABLE_ELEMENTS:
-            modified.append((e, m))
+    match (prefix, element, show, search):
+        # stat element
+        case (p, e, None, None) if p in PREFIXES and e in ELEMENTS and ELEMENTS[e]:
+            stats.append((e, p))
         # filtered countable element
-        case ("-", e, q, l) if e in COUNTABLE_ELEMENTS and l is not None and all(
-            f in COUNTABLE_FILTERS and re.match("\\d*\\.?\\d*", v) for f, v in l
+        case ("-", e, q, l) if e in ELEMENTS and ELEMENTS[e] and l and all(
+            f in FILTERS and FILTERS[f][1] for f, _ in l
         ):
-            filters.append((e, [(f, float(v)) for f, v in l]))
+            filters.add((e, tuple((f, float(v)) for f, v in l)))
             if q is None:
                 elements.append(e)
         # filtered uncountable element
-        case (
-            "-",
-            e,
-            q,
-            l,
-        ) if e in ELEMENTS and l is not None and e not in COUNTABLE_ELEMENTS and all(
-            f in ELEMENT_FILTERS for f, _ in l
+        case ("-", e, q, l) if e in ELEMENTS and not ELEMENTS[e] and l and all(
+            f in FILTERS and FILTERS[f][0] for f, _ in l
         ):
-            filters.append((e, [(f, v.replace("_", " ")) for f, v in l]))
+            filters.add((e, tuple((f, v.replace("_", " ")) for f, v in l)))
             if q is None:
                 elements.append(e)
         # unfiltered element
         case ("-", e, None, None) if e in ELEMENTS:
             elements.append(e)
-        # decks flag
-        case ("-", "decks", None, None):
-            list_decks = True
-        # unique modifier flag
-        case ("-", "unique", None, None):
-            unique = True
-        # english override flag
-        case ("-", "en", None, None):
-            english = True
+        # flags
+        case ("-", f, None, None) if f in FLAGS:
+            flags.add(f)
         # asterisk for all cards
         case (None, "*", None, None):
-            decks.append("collection")
+            decks.add("collection")
         # deck
         case (None, e, None, None):
-            decks.append(e)
+            decks.add(e)
         # unable to match
         case _:
             print(f"ERROR: '{arg}' is not a recognized command")
             exit(1)
 
-# read cards from files
-cards = []
-for d in decks:
-    file = os.path.join(DECK_DIR, d + ".txt")
-    # make sure file exists
-    if not os.path.isfile(file):
-        print(f"ERROR: File '{file}' not found")
-        exit(1)
 
-    with open(file, "r", encoding="utf-8") as f:
-        for line in f:
-            # columns are tab separated as per excel syntax
-            amount, card_set, number, foil, language = line.rstrip("\n").split("\t")
-            # add card from line
-            cards.append(
-                {
-                    "amount": int(amount),
-                    "set": card_set,
-                    "number": number,
-                    "foil": foil == "TRUE",
-                    "language": language,
-                }
-            )
+# max 10 api calls every second
+@sleep_and_retry
+@limits(calls=10, period=1)
+def get_card(card):
+    uri = API_LINK.format(**card)
+    response = requests.get(uri)
+    response.raise_for_status()
+    return response.json()
 
-# read cards from web only if necessary 1022
-if any(e not in RAW_ELEMENTS for e in elements + [e for e, _ in modified + filters]):
-    session = FuturesSession()
-    link_template = "https://scryfall.com/card/{set}/{number}"
-    if not english:
-        link_template += "/{language}"
-    # grab information from scryfall.com
-    links = [link_template.format(**c) for c in cards]
-    # load all links at once
-    futures = [session.get(link) for link in links]
-    responses = [future.result() for future in futures]
-    status_codes = [r.status_code for r in responses]
-    # make sure all responses are good
-    if any(s != 200 for s in status_codes):
-        print(
-            "ERROR: Response status code:",
-            ", ".join(f"{s} from {l}" for l, s in zip(links, status_codes) if s != 200),
-        )
-        exit(1)
-    # get text from the sites
-    sites = [r.text for r in responses]
 
-    # the cards the missing elements
-    for c, html in zip(cards, sites):
-        c["name"] = re.sub(
-            "&#39;",
-            "'",
-            re.search(
-                'class="card-text-card-name".*?>(.*?)</span>',
-                html,
-                re.S,
-            ).group(1),
-        ).strip()
+for deck in decks:
+    raw_path = os.path.join(DECK_DIR, deck, "raw.txt")
+    data_path = os.path.join(DECK_DIR, deck, "data.json")
 
-        cost = re.search('class="card-text-mana-cost".*?>(.*?)</span>', html, re.S)
-        c["cost"] = (
-            "0" if cost is None else re.sub("(^|}).*?({|$)", "", cost.group(1)).strip()
-        )
+    if "get" not in flags and os.path.isfile(data_path):
+        with open(data_path, "r", encoding="utf-8") as data_file:
+            cards.extend(json.loads(data_file.read()))
+    else:
+        with open(raw_path, "r", encoding="utf-8") as raw_file, open(
+            data_path, "w", encoding="utf-8"
+        ) as data_file:
+            raw = [
+                dict(zip(RAW_COLUMNS, line.rstrip("\n").split("\t")))
+                for line in raw_file
+            ]
+            scry = [get_card(card) for card in raw]
+            data = []
 
-        c["cmc"] = int("0" + re.sub("[^0-9]", "", c["cost"])) + len(
-            re.sub("[^WUBRG]", "", c["cost"])
-        )
-        c["color"] = " ".join(
-            v
-            for k, v in zip("WUBRG", ["White", "Blue", "Black", "Red", "Green"])
-            if k in c["cost"]
-        )
+            for r, s in zip(raw, scry):
+                if "card_faces" in s:
+                    s = s["card_faces"][0] | s
 
-        types = (
-            re.search('class="card-text-type-line".*?>(.*?)<', html, re.S)
-            .group(1)
-            .split("—")
-        )
-        c["type"] = types[0].strip()
-        c["subtype"] = "-" if len(types) < 2 else types[1].strip()
+                foil = r["foil"] == "TRUE"
+                types = s["type_line"].split(" \u2014 ")
+                data.append(
+                    {
+                        "amount": int(r["amount"]),
+                        "foil": foil,
+                        "name": s["name"],
+                        "lang": s["lang"],
+                        "cost": re.sub("[^WUBRG0-9]", "", s["mana_cost"]),
+                        "cmc": int(s["cmc"]),
+                        "type": types[0],
+                        "subtype": types[1] if len(types) > 1 else None,
+                        "color": "".join(s["colors"]),
+                        "identity": "".join(s["color_identity"]),
+                        "modern": s["legalities"]["modern"] == "legal",
+                        "commander": s["legalities"]["commander"] == "legal",
+                        "set": s["set_name"],
+                        "number": s["collector_number"],
+                        "rarity": s["rarity"],
+                        "fullart": s["full_art"],
+                        "usd": s["prices"]["usd_foil" if foil else "usd"],
+                        "eur": s["prices"]["eur_foil" if foil else "eur"],
+                    }
+                )
 
-        c["rarity"] = (
-            re.search('class="prints-current-set-details".*?·(.*?)·', html, re.S)
-            .group(1)
-            .strip()
-        )
+            data_file.write(json.dumps(data))
+            cards.extend(data)
 
-        price = re.search(
-            "Buy" + (" foil " if c["foil"] else " ") + "on Cardmarket.*?€(.*?)<",
-            html,
-            re.S,
-        )
-        c["price"] = 0 if price is None else float(price.group(1).strip())
-
-        tcg_price = re.search(
-            "Buy" + (" foil " if c["foil"] else " ") + "on TCGplayer.*?\\$(.*?)<",
-            html,
-            re.S,
-        )
-        c["tcg_price"] = 0 if tcg_price is None else float(tcg_price.group(1).strip())
-
-        modern = re.search(
-            'class="card-legality-item".*?>.*?<dt>Modern</dt>.*?>(.*?)<', html, re.S
-        )
-        c["modern"] = False if modern is None else modern.group(1).strip() == "Legal"
-
-        commander = re.search(
-            'class="card-legality-item".*?>.*?<dt>Commander</dt>.*?>(.*?)<', html, re.S
-        )
-        c["commander"] = (
-            False if commander is None else commander.group(1).strip() == "Legal"
-        )
 
 # apply card filters
-func_map = {  # filter function from filter operator
-    "=": lambda a, b: a == b,
-    "!=": lambda a, b: a != b,
-    ":": lambda a, b: b in a,
-    "!:": lambda a, b: b not in a,
-    ">": lambda a, b: a > b,
-    ">=": lambda a, b: a >= b,
-    "<": lambda a, b: a < b,
-    "<=": lambda a, b: a <= b,
-}
+def apply_filter(apply_amount):
+    global cards
 
-
-def apply_filter(amount):
-    global filters, cards
+    func_map = {  # filter function from filter operator
+        "=": lambda a, b: a == b,
+        "!=": lambda a, b: a != b,
+        "@": lambda a, b: b in a,
+        "!@": lambda a, b: b not in a,
+        ">": lambda a, b: a > b,
+        ">=": lambda a, b: a >= b,
+        "<": lambda a, b: a < b,
+        "<=": lambda a, b: a <= b,
+    }
 
     for e, f in filters:
         # apply most filters before collapsing but amount only after
-        if (e == "amount") == amount:
+        if (e == "amount") == apply_amount:
             # only keep the cards passing an option from all filters
             cards = [
                 c
                 for c in cards
                 if any(
-                    func_map[o](
-                        float(c[e]) if e in COUNTABLE_ELEMENTS else str(c[e]), v
-                    )
+                    func_map[o](float(c[e]) if ELEMENTS[e] else str(c[e]), v)
                     for o, v in f
                 )
             ]
@@ -290,9 +205,7 @@ collapsed = []
 for c in cards:
     for o in collapsed:
         # if all relevant elements are equal they can be collapsed into one
-        if all(
-            c[e] == o[e] for e in elements + [e[0] for e in modified] if e != "amount"
-        ):
+        if all(c[e] == o[e] for e in elements + [e[0] for e in stats] if e != "amount"):
             o["amount"] += c["amount"]
             break
     else:
@@ -316,29 +229,28 @@ def cmp(a, b):
 
 cards.sort(key=cmp_to_key(cmp))
 
-# print cards
 if cards:
     # print prices differently
     if elements:
         styled = [
             {
-                **c,
-                "price": "-"
-                if "price" not in c or c["price"] == 0
-                else f"€{c['price']}",
-                "tcg_price": "-"
-                if "tcg_price" not in c or c["tcg_price"] == 0
-                else f"${c['tcg_price']}",
+                k: str(v)
+                for k, v in {
+                    **c,
+                    "usd": "-" if c["usd"] is None else f"${c['usd']}",
+                    "eur": "-" if c["eur"] is None else f"€{c['eur']}",
+                    "subtype": "-" if c["subtype"] is None else c["subtype"],
+                }.items()
             }
             for c in cards
         ]
         # get least width that will fit all elements in column
-        widths = [max(map(lambda c: len(str(c[e])), styled)) for e in elements]
+        widths = [max(map(lambda c: len(c[e]), styled)) for e in elements]
         # create the template to format cards
         template = (" " * 4).join(f"{{{e}:<{w}}}" for e, w in zip(elements, widths))
         # print all cards
         for c in styled:
-            print(template.format(**{k: str(v) for k, v in c.items()}))
+            print(template.format(**c))
         # follow by newline
         print()
 
@@ -349,40 +261,36 @@ if cards:
                 yield c[e]
         else:
             for c in cards:
-                for _ in range(c["amount"]):
-                    yield c[e]
+                if c[e] is not None:
+                    for _ in range(c["amount"]):
+                        yield float(c[e])
 
     # print global statistics
-    for e, m in modified:
+    for e, m in stats:
         # function corresponding to modification
-        func = lambda _: []
-        match m:
-            case "-total-":
-                func = sum
-            case "-max-":
-                func = max
-            case "-min-":
-                func = min
-            case "-avg-":
-                func = mean
-            case "-median-":
-                func = median
+        func = {
+            "-total-": sum,
+            "-max-": max,
+            "-min-": min,
+            "-avg-": mean,
+            "-median-": median,
+        }[m]
 
         # add unit
         unit = ""
-        if e == "price":
-            unit = "€"
-        elif e == "tcg_price":
+        if e == "usd":
             unit = "$"
+        elif e == "eur":
+            unit = "€"
 
         # print statistic
         print(f"{m.strip('-').capitalize()} {e}: {unit}{round(func(data(e)),2)}")
 
     # print amount of unique matches
-    if unique:
-        print(f"Unique: {len(cards)}")
+    if "unique" in flags:
+        print(f"Unique: {len(cards)}\n")
     # follow by newline
-    if unique or modified:
+    elif stats:
         print()
 
 elif decks:
@@ -390,12 +298,11 @@ elif decks:
 
 
 # print all available decks
-if list_decks:
+if "decks" in flags:
     print("Saved decks:")
     # print cards in decks list
     for f in os.listdir(DECK_DIR):
-        if os.path.isfile(os.path.join(DECK_DIR, f)):
-            print(" " * 4 + os.path.splitext(os.path.basename(f))[0])
+        print(" " * 4 + os.path.splitext(f)[0])
     print()
 
 exit(0)
