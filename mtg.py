@@ -112,10 +112,25 @@ for deck in decks:
     raw_path = os.path.join(DECK_DIR, deck, "raw.txt")
     data_path = os.path.join(DECK_DIR, deck, "data.json")
 
-    if "get" not in flags and os.path.isfile(data_path):
+    if "get" not in flags:
+        if not os.path.isfile(data_path):
+            print(f"ERROR: Could not find '{data_path}'. Use '-get' to generate it")
+            exit(1)
+
         with open(data_path, "r", encoding="utf-8") as data_file:
-            cards.extend(json.loads(data_file.read()))
+            try:
+                cards.extend(json.loads(data_file.read()))
+            except ValueError as e:
+                print(
+                    f"ERROR: '{data_path}' contains invalid json. Use '-get' to generate it"
+                )
+                exit(1)
+
     else:
+        if not os.path.isfile(raw_path):
+            print(f"ERROR: Could not find '{raw_path}'")
+            exit(1)
+
         with open(raw_path, "r", encoding="utf-8") as raw_file, open(
             data_path, "w", encoding="utf-8"
         ) as data_file:
@@ -126,8 +141,13 @@ for deck in decks:
 
             async def get_card(card, session):
                 url = API_LINK.format(**card)
-                async with session.get(url=url) as response:
-                    return json.loads(await response.read())
+                async with session.get(url) as response:
+                    res = await response.json()
+                    if response.ok:
+                        return res
+                    else:
+                        print(f"ERROR: '{url}' returned http code {response.status}")
+                        return None
 
             async def get_cards(cards):
                 async with aiohttp.ClientSession() as session:
@@ -139,17 +159,25 @@ for deck in decks:
                     return await asyncio.gather(*tasks)
 
             scry = asyncio.run(get_cards(raw))
-            data = []
+            if None in scry:
+                exit(1)
 
+            data = []
             for r, s in zip(raw, scry):
                 if "card_faces" in s:
                     s = s["card_faces"][0] | s
+
+                try:
+                    amount = int(r["amount"])
+                except e as ValueError:
+                    print(f"ERROR: '{r['amount']}' is not a valid amount")
+                    exit(1)
 
                 foil = r["foil"] == "TRUE"
                 types = s["type_line"].split(" \u2014 ")
                 data.append(
                     {
-                        "amount": int(r["amount"]),
+                        "amount": amount,
                         "foil": foil,
                         "name": s["name"],
                         "lang": s["lang"],
@@ -260,7 +288,7 @@ if cards:
         # follow by newline
         print()
 
-    def data(e):
+    def expand(e):
         # remove the amount statistic to more easily apply the function
         if e == "amount":
             for c in cards:
@@ -290,7 +318,7 @@ if cards:
             unit = "€"
 
         # print statistic
-        print(f"{m.strip('-').capitalize()} {e}: {unit}{round(func(data(e)),2)}")
+        print(f"{m.strip('-').capitalize()} {e}: {unit}{round(func(expand(e)),2)}")
 
     # print amount of unique matches
     if "unique" in flags:
