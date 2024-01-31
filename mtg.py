@@ -7,9 +7,13 @@ from sys import argv
 from statistics import mean, median
 from functools import cmp_to_key
 
+# directory containing decks
 DECK_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "decks")
+# column order in raw data
 RAW_COLUMNS = ("amount", "set", "number", "lang", "foil")
+# format-able link to scryfall api
 API_LINK = "https://api.scryfall.com/cards/{set}/{number}/{lang}"
+# minimum time in seconds between api request
 RATE_LIMIT = 0.1
 
 decks = set()  # all decks to search
@@ -19,6 +23,7 @@ filters = set()  # all filters applied to cards
 flags = set()  # all flags set
 cards = []  # all cards found
 
+# card attribute name: card attribute is numeric
 ELEMENTS = {
     "amount": True,
     "foil": False,
@@ -40,6 +45,7 @@ ELEMENTS = {
     "eur": True,
 }
 
+# global numeric attributes
 PREFIXES = {
     "-total-",
     "-max-",
@@ -48,30 +54,32 @@ PREFIXES = {
     "-median-",
 }
 
+# attribute filters: (non-numeric compatibility, numeric compatibility)
 FILTERS = {
-    "=": (True, True),
-    "!=": (True, True),
-    "@": (True, False),
-    "!@": (True, False),
-    "<": (False, True),
-    "<=": (False, True),
-    ">": (False, True),
-    ">=": (False, True),
+    "=": (True, True),  # exact match
+    "!=": (True, True),  # anything but exact match
+    "?": (True, False),  # contains
+    "!?": (True, False),  # does not contain
+    "<": (False, True),  # strictly less than
+    "<=": (False, True),  # less than or equal to
+    ">": (False, True),  # strictly greater than
+    ">=": (False, True),  # greater than or equal to
 }
 
+# standalone flags
 FLAGS = {
-    "decks",
-    "unique",
-    "get",
+    "unique",  # number of unique matches
+    "decks",  # print all available decks
+    "get",  # get new card information from API_LINK
 }
 
 # parse arguments
 for arg in argv[1:]:
     prefix, element, show, search = re.match(
-        "(.*-)?([^?=!@<>]+)?(\\?)?(.+)?", arg
+        "^(.*-)?([^#=?!<>]+)?(#)?(.+)?$", arg
     ).groups()
     if search is not None:
-        search = [re.match("([=!@<>]+)?(.+)?", x).groups() for x in search.split("/")]
+        search = [re.match("^([=?!<>]+)?(.*)$", x).groups() for x in search.split("/")]
 
     match (prefix, element, show, search):
         # stat element
@@ -79,16 +87,22 @@ for arg in argv[1:]:
             stats.append((e, p))
         # filtered countable element
         case ("-", e, q, l) if e in ELEMENTS and ELEMENTS[e] and l and all(
-            f in FILTERS and FILTERS[f][1] for f, _ in l
+            f in FILTERS and FILTERS[f][1] for f, v in l
         ):
-            filters.add((e, tuple((f, float(v)) for f, v in l)))
+            for _, v in l:
+                if not re.match("^[0-9]+(_[0-9]+)?$", v):
+                    print(f"ERROR: '{v}' is not a number")
+                    exit(1)
+
+            if not err:
+                filters.add((e, tuple((f, float(v.replace("_", "."))) for f, v in l)))
             if q is None:
                 elements.append(e)
         # filtered uncountable element
         case ("-", e, q, l) if e in ELEMENTS and not ELEMENTS[e] and l and all(
-            f in FILTERS and FILTERS[f][0] for f, _ in l
+            f in FILTERS and FILTERS[f][0] for f, v in l
         ):
-            filters.add((e, tuple((f, v.replace("_", " ")) for f, v in l)))
+            filters.add((e, tuple(l)))
             if q is None:
                 elements.append(e)
         # unfiltered element
@@ -108,76 +122,90 @@ for arg in argv[1:]:
             print(f"ERROR: '{arg}' is not a recognized command")
             exit(1)
 
+
+# get raw card from API_LINK using session
+async def get_card(card, session):
+    url = API_LINK.format(**card)
+    async with session.get(url) as response:
+        res = await response.json()
+        if response.ok:
+            return res
+        else:
+            print(f"ERROR: '{url}' returned http code {response.status}")
+            return None
+
+
+# get raw cards in parallel
+async def get_cards(cards):
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for card in cards:
+            task = asyncio.create_task(get_card(card, session))
+            tasks.append(task)
+            # be nice to their server (and don't get a rate limit)
+            await asyncio.sleep(RATE_LIMIT)
+        return await asyncio.gather(*tasks)
+
+
+# get card data
 for deck in decks:
+    # path to raw card data
     raw_path = os.path.join(DECK_DIR, deck, "raw.txt")
+    # path to json with api data
     data_path = os.path.join(DECK_DIR, deck, "data.json")
 
-    if "get" not in flags:
-        if not os.path.isfile(data_path):
+    if "get" not in flags:  # load from file
+        if not os.path.isfile(data_path):  # file not found
             print(f"ERROR: Could not find '{data_path}'. Use '-get' to generate it")
             exit(1)
 
         with open(data_path, "r", encoding="utf-8") as data_file:
-            try:
+            try:  # add new cards as dictionaries
                 cards.extend(json.loads(data_file.read()))
-            except ValueError as e:
+            except ValueError as e:  # failed to load json
                 print(
                     f"ERROR: '{data_path}' contains invalid json. Use '-get' to generate it"
                 )
                 exit(1)
 
-    else:
-        if not os.path.isfile(raw_path):
+    else:  # get cards from api
+        if not os.path.isfile(raw_path):  # file not found
             print(f"ERROR: Could not find '{raw_path}'")
             exit(1)
 
         with open(raw_path, "r", encoding="utf-8") as raw_file, open(
             data_path, "w", encoding="utf-8"
         ) as data_file:
-            raw = [
+            raw = [  # split columns into dictionary
                 dict(zip(RAW_COLUMNS, line.rstrip("\n").split("\t")))
                 for line in raw_file
             ]
 
-            async def get_card(card, session):
-                url = API_LINK.format(**card)
-                async with session.get(url) as response:
-                    res = await response.json()
-                    if response.ok:
-                        return res
-                    else:
-                        print(f"ERROR: '{url}' returned http code {response.status}")
-                        return None
-
-            async def get_cards(cards):
-                async with aiohttp.ClientSession() as session:
-                    tasks = []
-                    for card in cards:
-                        task = asyncio.create_task(get_card(card, session))
-                        tasks.append(task)
-                        await asyncio.sleep(RATE_LIMIT)
-                    return await asyncio.gather(*tasks)
-
-            scry = asyncio.run(get_cards(raw))
-            if None in scry:
+            # check if any columns missing
+            if any(len(line) < len(RAW_COLUMNS) for line in raw):
+                print(f"ERROR: too few columns in '{raw_path}'")
                 exit(1)
 
-            data = []
-            for r, s in zip(raw, scry):
-                if "card_faces" in s:
-                    s = s["card_faces"][0] | s
-
-                try:
-                    amount = int(r["amount"])
-                except e as ValueError:
-                    print(f"ERROR: '{r['amount']}' is not a valid amount")
+            for line in raw:  # check that all amounts are valid
+                if not line["amount"].isdigit():
+                    print(f"ERROR: '{line['amount']}' is not a valid amount")
                     exit(1)
 
-                foil = r["foil"] == "TRUE"
-                types = s["type_line"].split(" \u2014 ")
-                data.append(
+            # get multiple cards at once
+            scry = asyncio.run(get_cards(raw))
+            if None in scry:  # bad response
+                exit(1)
+
+            data = []  # all cards from deck
+            for r, s in zip(raw, scry):
+                if "card_faces" in s:  # default to front face on double sided cards
+                    s = s["card_faces"][0] | s
+
+                foil = r["foil"] == "TRUE"  # wether card is foil or not
+                types = s["type_line"].split(" \u2014 ")  # type - subtype
+                data.append(  # process information about card
                     {
-                        "amount": amount,
+                        "amount": int(r["amount"]),
                         "foil": foil,
                         "name": s["name"],
                         "lang": s["lang"],
@@ -198,6 +226,7 @@ for deck in decks:
                     }
                 )
 
+            # save data to not have to -get next time
             data_file.write(json.dumps(data))
             cards.extend(data)
 
@@ -209,8 +238,8 @@ def apply_filter(apply_amount):
     func_map = {  # filter function from filter operator
         "=": lambda a, b: a == b,
         "!=": lambda a, b: a != b,
-        "@": lambda a, b: b in a,
-        "!@": lambda a, b: b not in a,
+        "?": lambda a, b: b in a,
+        "!?": lambda a, b: b not in a,
         ">": lambda a, b: a > b,
         ">=": lambda a, b: a >= b,
         "<": lambda a, b: a < b,
