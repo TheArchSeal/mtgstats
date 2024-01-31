@@ -360,12 +360,19 @@ elif decks:
     print("No matches found\n")
 
 
+# recursively print decks in directory
+def print_decks(dir, depth=1):
+    for f in os.listdir(dir):
+        full_path = os.path.join(dir, f)
+        if os.path.isdir(full_path):
+            print("    " * depth + f)
+            print_decks(full_path, depth + 1)
+
+
 # print all available decks
 if "decks" in flags:
     print("Saved decks:")
-    # print cards in decks list
-    for f in os.listdir(DECK_DIR):
-        print(" " * 4 + os.path.splitext(f)[0])
+    print_decks(DECK_DIR)
     print()
 
 exit(0)
