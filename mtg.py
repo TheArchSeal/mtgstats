@@ -94,8 +94,7 @@ for arg in argv[1:]:
                     print(f"ERROR: '{v}' is not a number")
                     exit(1)
 
-            if not err:
-                filters.add((e, tuple((f, float(v.replace("_", "."))) for f, v in l)))
+            filters.add((e, tuple((f, float(v.replace("_", "."))) for f, v in l)))
             if q is None:
                 elements.append(e)
         # filtered uncountable element
