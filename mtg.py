@@ -79,7 +79,9 @@ for arg in argv[1:]:
         "^(.*-)?([^#=?!<>]+)?(#)?(.+)?$", arg
     ).groups()
     if search is not None:
-        search = [re.match("^([=?!<>]+)?(.*)$", x).groups() for x in search.split("/")]
+        search = tuple(
+            re.match("^([=?!<>]+)?(.*)$", x).groups() for x in search.split("/")
+        )
 
     match (prefix, element, show, search):
         # stat element
@@ -101,7 +103,7 @@ for arg in argv[1:]:
         case ("-", e, q, l) if e in ELEMENTS and not ELEMENTS[e] and l and all(
             f in FILTERS and FILTERS[f][0] for f, v in l
         ):
-            filters.add((e, tuple(l)))
+            filters.add((e, l))
             if q is None:
                 elements.append(e)
         # unfiltered element
