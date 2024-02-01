@@ -4,7 +4,6 @@ import json
 import asyncio
 import aiohttp
 import aiofiles
-import shutil
 from sys import argv
 from statistics import mean, median
 from functools import cmp_to_key
