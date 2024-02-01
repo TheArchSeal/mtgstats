@@ -3,12 +3,19 @@ import re
 import json
 import asyncio
 import aiohttp
+import aiofiles
+import shutil
 from sys import argv
 from statistics import mean, median
 from functools import cmp_to_key
+from reportlab.pdfgen import canvas
 
 # directory containing decks
 DECK_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "decks")
+# directory containing images
+IMAGE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "images")
+# path to generated pdf
+PDF_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "mtg.pdf")
 # column order in raw data
 RAW_COLUMNS = ("amount", "set", "number", "lang", "foil")
 # format-able link to scryfall api
@@ -19,7 +26,7 @@ RATE_LIMIT = 0.1
 decks = set()  # all decks to search
 elements = []  # all elements to print
 stats = []  # all global stats to print
-filters = set()  # all filters applied to cards
+filters = []  # all filters applied to cards
 flags = set()  # all flags set
 cards = []  # all cards found
 
@@ -71,6 +78,8 @@ FLAGS = {
     "unique",  # number of unique matches
     "decks",  # print all available decks
     "get",  # get new card information from API_LINK
+    "get_img",  # get new card images from scryfall
+    "pdf",  # wether to generate pdf with matching cards
 }
 
 # parse arguments
@@ -79,9 +88,7 @@ for arg in argv[1:]:
         "^(.*-)?([^#=?!<>]+)?(#)?(.+)?$", arg
     ).groups()
     if search is not None:
-        search = tuple(
-            re.match("^([=?!<>]+)?(.*)$", x).groups() for x in search.split("/")
-        )
+        search = [re.match("^([=?!<>]+)?(.*)$", x).groups() for x in search.split("/")]
 
     match (prefix, element, show, search):
         # stat element
@@ -92,18 +99,18 @@ for arg in argv[1:]:
             f in FILTERS and FILTERS[f][1] for f, v in l
         ):
             for _, v in l:
-                if not re.match("^[0-9]+(_[0-9]+)?$", v):
+                if not re.match("^[0-9]+(.[0-9]+)?$", v):
                     print(f"ERROR: '{v}' is not a number")
                     exit(1)
 
-            filters.add((e, tuple((f, float(v.replace("_", "."))) for f, v in l)))
+            filters.append((e, [(f, float(v)) for f, v in l]))
             if q is None:
                 elements.append(e)
         # filtered uncountable element
         case ("-", e, q, l) if e in ELEMENTS and not ELEMENTS[e] and l and all(
             f in FILTERS and FILTERS[f][0] for f, v in l
         ):
-            filters.add((e, l))
+            filters.append((e, l))
             if q is None:
                 elements.append(e)
         # unfiltered element
@@ -145,6 +152,28 @@ async def get_cards(cards):
             tasks.append(task)
             # be nice to their server (and don't get a rate limit)
             await asyncio.sleep(RATE_LIMIT)
+        return await asyncio.gather(*tasks)
+
+
+# save images
+async def save_image(card, session):
+    url = card["img"]
+    img_path = os.path.join(IMAGE_DIR, card["id"] + ".jpg")
+    async with session.get(url) as response:
+        res = await response.read()
+        if response.ok:
+            async with aiofiles.open(img_path, "wb") as f:
+                await f.write(res)
+            return True
+        else:
+            print(f"ERROR: '{url}' returned http code {response.status}")
+            return False
+
+
+# save images in parallel
+async def save_images(cards):
+    async with aiohttp.ClientSession() as session:
+        tasks = [save_image(card, session) for card in cards]
         return await asyncio.gather(*tasks)
 
 
@@ -224,6 +253,8 @@ for deck in decks:
                         "fullart": s["full_art"],
                         "usd": s["prices"]["usd_foil" if foil else "usd"],
                         "eur": s["prices"]["eur_foil" if foil else "eur"],
+                        "img": s["image_uris"]["normal"],
+                        "id": s["id"],
                     }
                 )
 
@@ -231,53 +262,41 @@ for deck in decks:
             data_file.write(json.dumps(data))
             cards.extend(data)
 
+# download all images at once
+if "get_img" in flags:
+    # create directory if necessary
+    if not os.path.isdir(IMAGE_DIR):
+        os.makedirs(IMAGE_DIR)
+
+    status = asyncio.run(save_images(cards))
+    if not all(status):  # bad response
+        exit(1)
 
 # apply card filters
-def apply_filter(apply_amount):
-    global cards
+filter_map = {
+    "=": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+    "?": lambda a, b: b in a,
+    "!?": lambda a, b: b not in a,
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+}
 
-    func_map = {  # filter function from filter operator
-        "=": lambda a, b: a == b,
-        "!=": lambda a, b: a != b,
-        "?": lambda a, b: b in a,
-        "!?": lambda a, b: b not in a,
-        ">": lambda a, b: a > b,
-        ">=": lambda a, b: a >= b,
-        "<": lambda a, b: a < b,
-        "<=": lambda a, b: a <= b,
-    }
-
-    for e, f in filters:
-        # apply most filters before collapsing but amount only after
-        if (e == "amount") == apply_amount:
-            # only keep the cards passing an option from all filters
-            cards = [
-                c
-                for c in cards
-                if c[e] is not None
-                and any(
-                    func_map[o](float(c[e]) if ELEMENTS[e] else str(c[e]), v)
-                    for o, v in f
-                )
-            ]
-
-
-apply_filter(False)
-
-# collapse duplicate cards
-collapsed = []
-for c in cards:
-    for o in collapsed:
-        # if all relevant elements are equal they can be collapsed into one
-        if all(c[e] == o[e] for e in elements + [e[0] for e in stats] if e != "amount"):
-            o["amount"] += c["amount"]
-            break
-    else:
-        # if they aren't, it is a separate card
-        collapsed.append(c)
-
-cards = collapsed
-apply_filter(True)
+for e, f in filters:
+    # collapse before amount filter
+    if e == "amount":
+        continue
+    # only keep the cards passing an option from all filters
+    cards = [
+        c
+        for c in cards
+        if c[e] is not None
+        and any(
+            filter_map[o](float(c[e]) if ELEMENTS[e] else str(c[e]), v) for o, v in f
+        )
+    ]
 
 
 # sort cards
@@ -293,6 +312,27 @@ def cmp(a, b):
 
 cards.sort(key=cmp_to_key(cmp))
 
+# collapse duplicate cards
+collapsed = []
+for i, c in enumerate(cards):
+    for o in collapsed:
+        # if all relevant elements are equal they can be collapsed into one
+        if all(c[e] == o[e] for e in elements if e != "amount"):
+            o["amount"] += c["amount"]
+            o["_ids"].append(i)
+            break
+    else:
+        # if they aren't, it is a separate card
+        collapsed.append(c | {"_ids": [i]})
+
+# filter amount after collapse
+for e, f in filters:
+    if e != "amount":
+        continue
+    collapsed = [c for c in collapsed if any(filter_map[o](c[e], v) for o, v in f)]
+    cards = [c for i, c in enumerate(cards) if any(i in d["_ids"] for d in collapsed)]
+
+
 if cards:
     # print prices differently
     if elements:
@@ -306,7 +346,7 @@ if cards:
                     "subtype": "-" if c["subtype"] is None else c["subtype"],
                 }.items()
             }
-            for c in cards
+            for c in collapsed
         ]
         # get least width that will fit all elements in column
         widths = [max(map(lambda c: len(c[e]), styled)) for e in elements]
@@ -332,7 +372,7 @@ if cards:
     # print global statistics
     for e, m in stats:
         # function corresponding to modification
-        func = {
+        stat_map = {
             "-total-": sum,
             "-max-": max,
             "-min-": min,
@@ -348,17 +388,51 @@ if cards:
             unit = "€"
 
         # print statistic
-        print(f"{m.strip('-').capitalize()} {e}: {unit}{round(func(expand(e)),2)}")
+        print(f"{m.strip('-').capitalize()} {e}: {unit}{round(stat_map(expand(e)),2)}")
 
     # print amount of unique matches
     if "unique" in flags:
-        print(f"Unique: {len(cards)}\n")
+        print(f"Unique: {len(collapsed)}\n")
     # follow by newline
     elif stats:
         print()
 
 elif decks:
     print("No matches found\n")
+
+
+if "pdf" in flags:
+    pdf = canvas.Canvas(PDF_PATH)
+    pdf.setTitle("Magic: The Gathering")
+
+    images = [os.path.join(IMAGE_DIR, card["id"] + ".jpg") for card in cards]
+    if not all(os.path.isfile(i) for i in images):
+        print("ERROR: Could not find images. Use '-get_img' to generate it")
+        exit(1)
+
+    width, height = 180, 252
+    x, y = 0, 0
+
+    for card in cards:
+        pdf.drawInlineImage(
+            os.path.join(IMAGE_DIR, card["id"] + ".jpg"),
+            x,
+            pdf._pagesize[1] - y - height,
+            width=width,
+            height=height,
+        )
+        x += width
+        if x + width > pdf._pagesize[0]:
+            x = 0
+            y += height
+            if y + height > pdf._pagesize[1]:
+                y = 0
+                pdf.showPage()
+    if y != 0:
+        pdf.showPage()
+    pdf.save()
+
+    print(f"PDF saved at '{PDF_PATH}'\n")
 
 
 # recursively print decks in directory
