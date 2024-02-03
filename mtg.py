@@ -202,9 +202,10 @@ for deck in decks:
             print(f"ERROR: Could not find '{raw_path}'")
             exit(1)
 
-        with open(raw_path, "r", encoding="utf-8") as raw_file, open(
-            data_path, "w", encoding="utf-8"
-        ) as data_file:
+        with (
+            open(raw_path, "r", encoding="utf-8") as raw_file,
+            open(data_path, "w", encoding="utf-8") as data_file,
+        ):
             raw = [  # split columns into dictionary
                 dict(zip(RAW_COLUMNS, line.rstrip("\n").split("\t")))
                 for line in raw_file
@@ -302,7 +303,13 @@ for e, f in filters:
 def cmp(a, b):
     # sort by elements in the order they were specified
     for e in elements:
-        if a[e] < b[e]:
+        if a[e] is b[e] is None:
+            continue
+        elif a[e] is None:
+            return -1
+        elif b[e] is None:
+            return 1
+        elif a[e] < b[e]:
             return -1
         elif b[e] < a[e]:
             return 1
@@ -350,7 +357,7 @@ if cards:
         # get least width that will fit all elements in column
         widths = [max(map(lambda c: len(c[e]), styled)) for e in elements]
         # create the template to format cards
-        template = (" " * 4).join(f"{{{e}:<{w}}}" for e, w in zip(elements, widths))
+        template = "    ".join(f"{{{e}:<{w}}}" for e, w in zip(elements, widths))
         # print all cards
         for c in styled:
             print(template.format(**c))
