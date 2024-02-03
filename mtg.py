@@ -5,7 +5,7 @@ import asyncio
 import aiohttp
 import aiofiles
 from sys import argv
-from statistics import mean, median
+from statistics import median, mean
 from functools import cmp_to_key
 from reportlab.pdfgen import canvas
 
@@ -51,13 +51,14 @@ ELEMENTS = {
     "eur": True,
 }
 
-# global numeric attributes
+# global numeric attribute: (non-numeric compatibility, numeric compatibility)
 PREFIXES = {
-    "-total-",
-    "-max-",
-    "-min-",
-    "-avg-",
-    "-median-",
+    "-total-": (False, True),  # sum of all values
+    "-max-": (False, True),  # highest value
+    "-min-": (False, True),  # lowest value
+    "-avg-": (False, True),  # arithmetic mean
+    "-median-": (False, True),  # median value
+    "-unique-": (True, True),  # number of unique values
 }
 
 # attribute filters: (non-numeric compatibility, numeric compatibility)
@@ -74,7 +75,6 @@ FILTERS = {
 
 # standalone flags
 FLAGS = {
-    "unique",  # number of unique matches
     "decks",  # print all available decks
     "get",  # get new card information from API_LINK
     "get_img",  # get new card images from scryfall
@@ -91,7 +91,9 @@ for arg in argv[1:]:
 
     match (prefix, element, show, search):
         # stat element
-        case (p, e, None, None) if p in PREFIXES and e in ELEMENTS and ELEMENTS[e]:
+        case (p, e, None, None) if p in PREFIXES and e in ELEMENTS and PREFIXES[p][
+            ELEMENTS[e]
+        ]:
             stats.append((e, p))
         # filtered countable element
         case ("-", e, q, l) if e in ELEMENTS and ELEMENTS[e] and l and all(
@@ -232,7 +234,9 @@ for deck in decks:
                     s = s["card_faces"][0] | s
 
                 foil = r["foil"] == "TRUE"  # wether card is foil or not
-                types = s["type_line"].split(" \u2014 ")  # type - subtype
+                types = s["type_line"].split(" \u2014 ")  # (type, subtype)
+                usd = s["prices"]["usd_foil" if foil else "usd"]
+                eur = s["prices"]["eur_foil" if foil else "eur"]
                 data.append(  # process information about card
                     {
                         "amount": int(r["amount"]),
@@ -251,8 +255,8 @@ for deck in decks:
                         "number": s["collector_number"],
                         "rarity": s["rarity"],
                         "fullart": s["full_art"],
-                        "usd": s["prices"]["usd_foil" if foil else "usd"],
-                        "eur": s["prices"]["eur_foil" if foil else "eur"],
+                        "usd": None if usd is None else float(usd),
+                        "eur": None if eur is None else float(eur),
                         "img": s["image_uris"]["normal"],
                         "id": s["id"],
                     }
@@ -292,10 +296,7 @@ for e, f in filters:
     cards = [
         c
         for c in cards
-        if c[e] is not None
-        and any(
-            filter_map[o](float(c[e]) if ELEMENTS[e] else str(c[e]), v) for o, v in f
-        )
+        if c[e] is not None and any(filter_map[o](c[e], v) for o, v in f)
     ]
 
 
@@ -373,7 +374,7 @@ if cards:
             for c in cards:
                 if c[e] is not None:
                     for _ in range(c["amount"]):
-                        yield float(c[e])
+                        yield c[e]
 
     # print global statistics
     for e, m in stats:
@@ -384,6 +385,7 @@ if cards:
             "-min-": min,
             "-avg-": mean,
             "-median-": median,
+            "-unique-": lambda l: len(set(l)),
         }[m]
 
         # add unit
