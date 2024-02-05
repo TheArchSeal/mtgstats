@@ -470,7 +470,7 @@ if "html" in flags:
                 "<body>\n",
                 *(
                     # images with links
-                    '    <a href="{href}"><img src="file:///{src}" alt="{alt}">\n'.format(
+                    '    <a href="{href}"><img src="file:///{src}" alt="{alt}"></a>\n'.format(
                         src=os.path.join(IMAGE_DIR, card["id"] + ".jpg"),
                         alt=card["name"],
                         href=card["link"],
