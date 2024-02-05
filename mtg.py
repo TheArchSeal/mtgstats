@@ -15,6 +15,8 @@ DECK_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "decks")
 IMAGE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "images")
 # path to generated pdf
 PDF_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "mtg.pdf")
+# size of cards in pdf measured in points
+CARD_SIZE = (180, 252)
 # column order in raw data
 RAW_COLUMNS = ("amount", "set", "number", "lang", "foil")
 # format-able link to scryfall api
@@ -97,7 +99,7 @@ for arg in argv[1:]:
             stats.append((e, p))
         # filtered countable element
         case ("-", e, q, l) if e in ELEMENTS and ELEMENTS[e] and l and all(
-            f in FILTERS and FILTERS[f][1] for f, v in l
+            f in FILTERS and FILTERS[f][1] for f, _ in l
         ):
             for _, v in l:
                 if not re.match("^[0-9]+(.[0-9]+)?$", v):
@@ -109,7 +111,7 @@ for arg in argv[1:]:
                 elements.append(e)
         # filtered uncountable element
         case ("-", e, q, l) if e in ELEMENTS and not ELEMENTS[e] and l and all(
-            f in FILTERS and FILTERS[f][0] for f, v in l
+            f in FILTERS and FILTERS[f][0] for f, _ in l
         ):
             filters.append((e, l))
             if q is None:
@@ -180,6 +182,10 @@ async def save_images(cards):
 
 # get card data
 for deck in decks:
+    if not os.path.isdir(os.path.join(DECK_DIR, deck)):
+        print(f"ERROR: Could not find deck '{deck}'")
+        exit(1)
+
     # path to raw card data
     raw_path = os.path.join(DECK_DIR, deck, "raw.txt")
     # path to json with api data
@@ -233,7 +239,7 @@ for deck in decks:
                 if "card_faces" in s:  # default to front face on double sided cards
                     s = s["card_faces"][0] | s
 
-                foil = r["foil"] == "TRUE"  # wether card is foil or not
+                foil = r["foil"].lower() == "true"  # wether card is foil or not
                 types = s["type_line"].split(" \u2014 ")  # (type, subtype)
                 usd = s["prices"]["usd_foil" if foil else "usd"]
                 eur = s["prices"]["eur_foil" if foil else "eur"]
@@ -398,42 +404,42 @@ if cards:
         # print statistic
         print(f"{m.strip('-').capitalize()} {e}: {unit}{round(stat_map(expand(e)),2)}")
 
-    # print amount of unique matches
-    if "unique" in flags:
-        print(f"Unique: {len(collapsed)}\n")
     # follow by newline
-    elif stats:
+    if stats:
         print()
 
 elif decks:
     print("No matches found\n")
 
-
+# generate pdf of matching cards
 if "pdf" in flags:
     pdf = canvas.Canvas(PDF_PATH)
     pdf.setTitle("Magic: The Gathering")
 
+    # check so all images are downloaded
     images = [os.path.join(IMAGE_DIR, card["id"] + ".jpg") for card in cards]
     if not all(os.path.isfile(i) for i in images):
         print("ERROR: Could not find images. Use '-get_img' to generate it")
         exit(1)
 
-    width, height = 180, 252
     x, y = 0, 0
-
-    for card in cards:
+    for image in images:
+        # add image
         pdf.drawInlineImage(
-            os.path.join(IMAGE_DIR, card["id"] + ".jpg"),
+            image,
             x,
-            pdf._pagesize[1] - y - height,
-            width=width,
-            height=height,
+            pdf._pagesize[1] - y - CARD_SIZE[1],
+            CARD_SIZE[0],
+            CARD_SIZE[1],
         )
-        x += width
-        if x + width > pdf._pagesize[0]:
+        # new column
+        x += CARD_SIZE[0]
+        if x + CARD_SIZE[0] > pdf._pagesize[0]:
+            # new line
             x = 0
-            y += height
-            if y + height > pdf._pagesize[1]:
+            y += CARD_SIZE[1]
+            if y + CARD_SIZE[1] > pdf._pagesize[1]:
+                # new page
                 y = 0
                 pdf.showPage()
     if y != 0:
