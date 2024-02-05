@@ -4,7 +4,7 @@
 
 ## Decks
 
-To specify which decks to use, pass the name of the deck as a command-line argument. To do this simply add `<deck>` when running the script.
+To specify which decks to use, pass the name of the deck as a command-line argument. To do this simply add `<deck>` when running the script. '*' can be used in place of the name 'collection'.
 
 ## Card Attributes
 
