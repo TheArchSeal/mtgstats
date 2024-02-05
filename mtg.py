@@ -15,6 +15,8 @@ DECK_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "decks")
 IMAGE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "images")
 # path to generated pdf
 PDF_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "mtg.pdf")
+# path to generated html
+HTML_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), "mtg.html")
 # size of cards in pdf measured in points
 CARD_SIZE = (180, 252)
 # column order in raw data
@@ -81,6 +83,7 @@ FLAGS = {
     "get",  # get new card information from API_LINK
     "get_img",  # get new card images from scryfall
     "pdf",  # wether to generate pdf with matching cards
+    "html",  # wether to generate html with matching cards
 }
 
 # parse arguments
@@ -265,6 +268,7 @@ for deck in decks:
                         "eur": None if eur is None else float(eur),
                         "img": s["image_uris"]["normal"],
                         "id": s["id"],
+                        "link": s["scryfall_uri"],
                     }
                 )
 
@@ -415,7 +419,7 @@ if cards:
 elif decks:
     print("No matches found\n")
 
-# generate pdf of matching cards
+# generate pdf with matching cards
 if "pdf" in flags:
     pdf = canvas.Canvas(PDF_PATH)
     pdf.setTitle("Magic: The Gathering")
@@ -450,7 +454,39 @@ if "pdf" in flags:
         pdf.showPage()
     pdf.save()
 
-    print(f"PDF saved at '{PDF_PATH}'\n")
+    print(f"PDF saved at '{PDF_PATH}'")
+
+# generate html page with matching cards
+if "html" in flags:
+    with open(HTML_PATH, mode="w", encoding="utf-8") as f:
+        f.writelines(
+            (  # basic document structure
+                "<!DOCTYPE html>\n",
+                '<html lang="en">\n',
+                "<head>\n",
+                '    <meta charset="UTF-8">\n',
+                "    <title>Magic: The Gathering</title>\n",
+                "</head>\n",
+                "<body>\n",
+                *(
+                    # images with links
+                    '    <a href="{href}"><img src="file:///{src}" alt="{alt}">\n'.format(
+                        src=os.path.join(IMAGE_DIR, card["id"] + ".jpg"),
+                        alt=card["name"],
+                        href=card["link"],
+                    )
+                    for card in cards
+                ),
+                "</body>\n",
+                "</html>\n",
+            )
+        )
+
+    print(f"HTML document saved at '{HTML_PATH}'")
+
+# add newline
+if "pdf" in flags or "html" in flags:
+    print()
 
 
 # recursively print decks in directory
