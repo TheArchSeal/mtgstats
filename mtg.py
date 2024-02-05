@@ -305,26 +305,6 @@ for e, f in filters:
         if c[e] is not None and any(filter_map[o](c[e], v) for o, v in f)
     ]
 
-
-# sort cards
-def cmp(a, b):
-    # sort by elements in the order they were specified
-    for e in elements:
-        if a[e] is b[e] is None:
-            continue
-        elif a[e] is None:
-            return -1
-        elif b[e] is None:
-            return 1
-        elif a[e] < b[e]:
-            return -1
-        elif b[e] < a[e]:
-            return 1
-    return 0
-
-
-cards.sort(key=cmp_to_key(cmp))
-
 # collapse duplicate cards
 collapsed = []
 for i, c in enumerate(cards):
@@ -344,6 +324,27 @@ for e, f in filters:
         continue
     collapsed = [c for c in collapsed if any(filter_map[o](c[e], v) for o, v in f)]
     cards = [c for i, c in enumerate(cards) if any(i in d["_ids"] for d in collapsed)]
+
+
+# sort cards
+def cmp(a, b):
+    # sort by elements in the order they were specified
+    for e in elements:
+        if a[e] is b[e] is None:
+            continue
+        elif a[e] is None:
+            return -1
+        elif b[e] is None:
+            return 1
+        elif a[e] < b[e]:
+            return -1
+        elif b[e] < a[e]:
+            return 1
+    return 0
+
+
+cards.sort(key=cmp_to_key(cmp))
+collapsed.sort(key=cmp_to_key(cmp))
 
 
 if cards:
