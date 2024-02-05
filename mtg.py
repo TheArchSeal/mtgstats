@@ -356,7 +356,10 @@ if cards:
                     **c,
                     "usd": "-" if c["usd"] is None else f"${c['usd']}",
                     "eur": "-" if c["eur"] is None else f"€{c['eur']}",
-                    "subtype": "-" if c["subtype"] is None else c["subtype"],
+                    "subtype": c["subtype"] or "-",
+                    "color": c["color"] or "-",
+                    "identity": c["identity"] or "-",
+                    "cost": c["cost"] or "0",
                 }.items()
             }
             for c in collapsed
