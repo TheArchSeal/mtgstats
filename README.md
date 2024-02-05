@@ -56,7 +56,7 @@ To filter cards based on their attribute, append the filter and value to the att
 
 ## Global Attributes
 
-A non-filtered attribute can be prefixed by a global attribute to print statistics on all matching cards by this syntax `-<prefix>-<attribute>`.
+A non-filtered attribute can be prefixed by a global attribute to print statistics on all matching cards with the syntax `-<prefix>-<attribute>`.
 
 ### Numeric
 
