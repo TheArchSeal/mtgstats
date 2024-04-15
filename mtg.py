@@ -27,6 +27,7 @@ API_LINK = "https://api.scryfall.com/cards/{set}/{number}/{lang}"
 RATE_LIMIT = 0.1
 
 decks = set()  # all decks to search
+outputs = set()  # all decks to output to
 elements = []  # all elements to print
 stats = []  # all global stats to print
 filters = []  # all filters applied to cards
@@ -45,6 +46,7 @@ ELEMENTS = {
     "subtype": False,
     "color": False,
     "identity": False,
+    "text": False,
     "modern": False,
     "commander": False,
     "set": False,
@@ -84,6 +86,7 @@ FLAGS = {
     "get_img",  # get new card images from scryfall
     "pdf",  # wether to generate pdf with matching cards
     "html",  # wether to generate html with matching cards
+    "o",  # use next deck as output instead of input
 }
 
 # parse arguments
@@ -125,12 +128,13 @@ for arg in argv[1:]:
         # flags
         case ("-", f, None, None) if f in FLAGS:
             flags.add(f)
-        # asterisk for all cards
-        case (None, "*", None, None):
-            decks.add("collection")
         # deck
         case (None, e, None, None):
-            decks.add(e)
+            if "o" in flags:
+                outputs.add(e)
+                flags.remove("o")  # don't output all following
+            else:
+                decks.add(e)
         # unable to match
         case _:
             print(f"ERROR: '{arg}' is not a recognized command")
@@ -232,6 +236,21 @@ for deck in decks:
                     print(f"ERROR: '{line['amount']}' is not a valid amount")
                     exit(1)
 
+            # combine duplicates
+            collapsed_raw = []
+            for r in raw:
+                r["amount"] = int(r["amount"])
+                r["foil"] = r["foil"].lower()
+                for c in collapsed_raw:
+                    # amount does not need to match
+                    if all(r[e] == c[e] for e in RAW_COLUMNS if e != "amount"):
+                        c["amount"] += r["amount"]
+                        break
+                else:
+                    # if no match found, it's a separate card
+                    collapsed_raw.append(r)
+            raw = collapsed_raw
+
             # get multiple cards at once
             scry = asyncio.run(get_cards(raw))
             if None in scry:  # bad response
@@ -242,7 +261,7 @@ for deck in decks:
                 if "card_faces" in s:  # default to front face on double sided cards
                     s = s["card_faces"][0] | s
 
-                foil = r["foil"].lower() == "true"  # wether card is foil or not
+                foil = r["foil"] == "true"  # wether card is foil or not
                 types = s["type_line"].split(" \u2014 ")  # (type, subtype)
                 usd = s["prices"]["usd_foil" if foil else "usd"]
                 eur = s["prices"]["eur_foil" if foil else "eur"]
@@ -258,6 +277,7 @@ for deck in decks:
                         "subtype": types[1] if len(types) > 1 else None,
                         "color": "".join(s["colors"]),
                         "identity": "".join(s["color_identity"]),
+                        "text": s["oracle_text"],
                         "modern": s["legalities"]["modern"] == "legal",
                         "commander": s["legalities"]["commander"] == "legal",
                         "set": s["set_name"],
@@ -269,6 +289,7 @@ for deck in decks:
                         "img": s["image_uris"]["normal"],
                         "id": s["id"],
                         "link": s["scryfall_uri"],
+                        "raw": "\t".join(str(r[e]) for e in RAW_COLUMNS),
                     }
                 )
 
@@ -503,5 +524,21 @@ if "decks" in flags:
     print("Saved decks:")
     print_decks(DECK_DIR)
     print()
+
+# print to console if no file set
+if "o" in flags:
+    print("\n".join(c["raw"] for c in cards), end="\n\n")
+
+# output cards to decks
+for deck in outputs:
+    dir_path = os.path.join(DECK_DIR, deck)
+    file_path = os.path.join(DECK_DIR, deck, "raw.txt")
+
+    # create dir if not present
+    if not os.path.isdir(dir_path):
+        os.makedirs(dir_path)
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines((c["raw"] + "\n") for c in cards)
 
 exit(0)

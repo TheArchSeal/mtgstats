@@ -4,7 +4,7 @@
 
 ## Decks
 
-To specify which decks to use, pass the name of the deck as a command-line argument. To do this simply add `<deck>` when running the script. '*' can be used in place of the name 'collection'.
+To specify which decks to use, pass the name of the deck as a command-line argument. To do this simply add `<deck>` when running the script.
 
 ## Card Attributes
 
@@ -27,6 +27,7 @@ Attributes can be passed as command-line arguments to select which will be print
 * **subtype** - all the cards subtypes separated by space
 * **color** - the color of card
 * **identity** - the color identity of the card
+* **text** - the card text
 * **modern** - wether it is modern legal
 * **commander** - wether it is commander legal
 * **set** - name of the set teh card was printed in
@@ -80,6 +81,7 @@ These flags are added as command-line arguments without relating to attributes t
 * **get_img** - download new card images from scryfall
 * **pdf** - create pdf with matching cards
 * **html** - create html document with matching cards
+* **o** - the next deck will instead be written over with the raw card data
 
 ## File Structure
 
